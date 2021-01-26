@@ -1,0 +1,641 @@
+---
+title: "Exploring Survival on the Titanic - Part 1"
+author: "Rick Dean"
+date: "12/14/2019"
+output: 
+  html_document:
+    toc: yes
+    toc_depth: 3
+    css: style.css
+---
+
+```{r,setup, include=FALSE, eval=TRUE}
+options(knitr.table.format = "html")
+knitr::opts_chunk$set(echo=TRUE, collapse=TRUE, message = FALSE, warning = FALSE, fig.width=10, fig.height=8)
+```
+
+```{r, message=FALSE, warning=FALSE}
+library(here)
+library(tidyr)
+library(readr)
+library(stringr)
+library(dplyr)
+library(ggplot2)
+library(mice)
+library(randomForest)
+library(RplotterPkg)
+
+here::here()
+```
+
+# 1 Introduction
+The following analysis is based on the R [script](https://www.kaggle.com/mrisdal/exploring-survival-on-the-titanic/code) presented by Megan L. Risdal on [Kaggle](https://www.kaggle.com) along with data [descriptions](https://www.kaggle.com/c/titanic/data).
+
+Additional analysis using decision trees and randomForest is provided by [Titanic: Getting started with R](https://trevorstephens.com/kaggle-titanic-tutorial/getting-started-with-r/) by Trevor Stephens.
+
+The Titantic data originated from the [Vanderbilt Biostat Department](http://biostat.mc.vanderbilt.edu/wiki/pub/Main/DataSets/titanic3.xls)
+
+# 2 Load and check data
+<div class="task">
+  Task: Read the csv file that has all 1309 passengers with recorded data.
+</div>
+
+```{r, message = FALSE}
+full_df <- readr::read_csv("data/titanic_full.csv", n_max = 1309)
+glimpse(full_df)
+```
+
+# 3 Add new variables
+## 3.1 Add a passenger_id column
+```{r}
+full_df <- full_df %>% 
+  mutate(passenger_id = seq(from = 1, to = 1309, by=1))
+```
+
+## 3.2 Add *title* column
+
+<div class="task">
+  Task: Add *title* column to full_df.
+</div>
+
+```{r}
+full_df$title <- str_replace(full_df$name, ".+, ","")
+full_df$title <- str_replace(full_df$title, "\\. .+", "")
+```
+
+<div class="task">
+  Task: Look at frequency of various female titles.
+</div>
+```{r}
+females_df <- full_df %>%
+  filter(sex == "female")
+table(females_df$title)
+```
+
+<div class="task">
+  Task: Correct *title* for females.
+</div>
+
+```{r}
+full_df$title <- if_else(full_df$title %in% c("Dona","Lady","Mme","the Countess"), "Mrs", full_df$title)
+full_df$title <- if_else(full_df$title %in% c("Mlle","Ms"), "Miss", full_df$title)
+full_df$title <- if_else(full_df$sex == "female" & full_df$title == "Dr", "Mrs", full_df$title)
+```
+
+<div class="task">
+  Task: Check frequency of *title* for females again.
+</div>
+
+```{r}
+females_df <- full_df %>%
+  filter(sex == "female")
+table(females_df$title)
+```
+
+<div class="task">
+  Task: Look at frequency of various male titles.
+</div>
+
+```{r}
+males_df <- full_df %>%
+  filter(sex == "male")
+table(males_df$title)
+```
+
+<div class="task">
+  Task: Correct *title* for males.
+</div>
+
+```{r}
+full_df$title <- if_else(full_df$title %in% c("Capt","Col","Don","Dr","Jonkheer","Major","Master","Rev","Sir"), "Mr", full_df$title)
+```
+
+<div class="task">
+  Task: Check frequency of *title* for males again.
+</div>
+
+```{r}
+males_df <- full_df %>%
+  filter(sex == "male")
+table(males_df$title)
+```
+
+## 3.3 Add *surname* column
+
+<div class="task">
+  Task: Create a *surname* column.
+</div>
+
+```{r}
+full_df$surname <- str_split(full_df$name, ", ", simplify = TRUE)[,1]
+```
+
+## 3.4 Add *family_size* column
+<div class="task">
+  Task: Create a *family_size* column.
+</div>
+
+```{r}
+full_df$family_size <- full_df$sibsp + full_df$parch + 1
+```
+
+## 3.5 Add *family* column
+<div class="task">
+  Task: Create a *family* column.
+</div>
+
+```{r}
+full_df$family <- paste(full_df$surname, full_df$family_size, sep = "_")
+```
+
+## 3.6 Add *deck* column
+<div class="task">
+  Task: Create a *deck* column.
+</div>
+
+```{r}
+full_df$deck <- str_split(full_df$cabin, "", simplify = TRUE)[,1]
+```
+
+## 3.7 Review *full_df*
+<div class="task">
+  Task: Review *full_df* data frame.
+</div>
+
+```{r}
+glimpse(full_df)
+```
+
+# 4 Finding Relationships in `full_df`
+## 4.1 Looking at *Survived*
+<div class="task">
+  Task: Using table() and prop.table() show the counts and proportions of the survived/non-survived passengers.
+</div>  
+
+```{r}
+table(full_df$survived)
+```
+809 passengers did not survive. 500 passengers did survive.
+
+
+```{r}
+prop.table(table(full_df$survived))
+```
+62% of the passengers did not survive. 38% of the passengers did survive.
+
+
+## 4.2 *survived* vs *sex*
+<div class="task">
+  Task: Using prop.table() show the proportions by sex of the survived/non-survived passengers.  Note the use of 1 for proportion along rows and 2 for proportions along columns and no value for proportions from the grand total.
+</div>  
+```{r}
+prop.table(table(full_df$sex, full_df$survived), 1)
+```
+It appears that most passengers that were female survived at 73%, while males did not at 81%.
+
+
+```{r}
+prop.table(table(full_df$sex, full_df$survived), 2)
+```
+
+
+## 4.3 *survived* vs *family_size*
+
+<div class="task">
+  Task: Plot the counts of *survived* across values of *family_size* where they are both factors.
+</div>
+
+```{r}
+survived_family_size_df <- full_df %>%
+  filter(!is.na(survived)) %>%
+  mutate(
+    survived = factor(survived),
+    family_size = factor(family_size)
+  ) %>% 
+  select(family_size, survived)
+glimpse(survived_family_size_df)
+```
+
+```{r, fig.width=12, fig.height=8}
+RplotterPkg::create_bar_plot(
+    df = survived_family_size_df,
+    aes_x = "family_size",
+    aes_fill = "survived",
+    position = "dodge",
+    y_limits = c(0, 560),
+    palette_colors = c("red", "green"),
+    title = "Relationship between 'family_size' and 'survived'",
+    subtitle = "(N = 1309)",
+    x_title = "Family Size"
+)
+```
+
+Appears that *family_size* between 2 to 4 were more likely to survive.
+
+## 4.4 *survived* vs *family_size_dis*
+<div class="task">
+  Task: Add a *family_size_dis* column to `full_df` that discretizes *family_size* into 3 levels of `singleton`, `small`, and `large`. Show a crosstabulation of *survived* with *family_size_dis*.
+</div>
+
+```{r}
+full_df <- full_df %>%
+  mutate(
+    family_size_dis = case_when(
+      family_size == 1 ~ "singleton",
+      family_size > 1 & family_size < 5 ~ "small",
+      family_size >= 5 ~ "large"
+    ),
+    family_size_dis = factor(family_size_dis)
+  )
+table(full_df$survived, full_df$family_size_dis)
+```
+Small families seem to have a higher count in survival.  Show the proportions table.
+```{r}
+survived_familysizedis_table <- prop.table(table(full_df$survived, full_df$family_size_dis), 1)
+survived_familysizedis_table
+```
+Proportionally `small` families seem to have an edge in survival at 49%.
+
+
+<div class="task">
+  Task: With a mosaicplot, plot *survived* vs *family_size_dis*.
+</div>
+
+```{r}
+mosaicplot(survived_familysizedis_table, main = "'survived' vs 'family_size_dis'")
+```
+
+There is a survival penalty among and large families, but a benefit for passengers in small families.
+
+# 5 Missing data.
+## 5.1 Examine missing data for *pclass*, *sex*, *age*, *fare*, and *embarked*
+<div class="task">
+  Task: Using the <code class="cd">mice()</code> package show the pattern of missing data for selected variables.
+</div>
+
+```{r}
+selected_var_df <- full_df %>% 
+  select(pclass, sex, age, fare, embarked)
+mice::md.pattern(selected_var_df, plot = FALSE)
+```
+There are 1043 samples that are complete; 263 are missing only *age*; 2 are missing *embarked* and 1 is missing *fare*.
+
+## 5.2 Address *embarked* missing data
+<div class="task">
+  Task: Identify the observations that have missing *embarked* values.
+</div>
+
+```{r}
+missing_embarked_df <- full_df %>% 
+  filter(is.na(embarked))
+missing_embarked_df
+```
+There are 2 passengers with *embarked* values of <code class="cd">NA</code>.
+
+<div class="task">
+  Task: Complete a boxplot with *embarked* along the x axis, *fare* along the y axis, and a fill assigned to *pclass* for observations that do not have a missing *embarked* value.
+</div>
+
+```{r}
+embarked_fare_pclass_df <- full_df %>%
+  filter(passenger_id != 169 & passenger_id != 285) %>% 
+  mutate(pclass = factor(pclass)) %>% 
+  select(embarked, fare, pclass)
+
+addon <- geom_hline(aes(yintercept = 80), color = "red", linetype = "dashed", lwd = 1) 
+
+RplotterPkg::create_box_plot(
+  df = embarked_fare_pclass_df,
+  aes_x = "embarked",
+  aes_y = "fare",
+  aes_fill = "pclass",
+  title = "Distribution of 'fare' across categorical values of 'embarked' and 'pclass'",
+  subtitle = "(dashed line = $80)",
+  center_titles = TRUE,
+  add_ons = c(addon)
+)
+```
+
+The red dashed line is showing the location of the 80 dollar *fare* value.  From the plot, observations with an *embarked* value of "C" and *pclass*' of 1, have a mean *fare* close to $80. The 2 missing *embarked* observations had a *pclass* of 1 and a *fare* of 80 which suggest that their *embarked* value is "C".
+
+<div class="task">
+  Task: Set the *embarked* values for the 2 passengers with missing values to "C". Check again for *embarked* <code class="cd">NA</code> values.
+</div>
+
+```{r}
+full_df$embarked[is.na(full_df$embarked)] <- "C"
+missing_embarked_df <- full_df %>% 
+  filter(is.na(embarked))
+missing_embarked_df
+```
+
+## 5.3 Address *fare* missing data
+
+<div class="task">
+  Task: Identify the observations that have missing *fare* values.
+</div>
+
+```{r}
+missing_fare_df <- full_df %>% 
+  filter(is.na(fare))
+missing_fare_df
+```
+There is 1 passenger with *fare* value of <code class="cd">NA</code>.  The passenger has a *pclass* of 3 and an *embarked* of "S". 
+<div class="task">
+  Task: Plot the density of *fare* for observations with a *pclass* of 3 and an *embarked* of "S". Locate with a dashed line their median value.
+</div>
+
+```{r}
+pclass_embarked_fare_df <- full_df %>%
+  filter(pclass == 3 & embarked == "S") %>%
+  select(pclass, embarked, fare)
+median_fare <- median(pclass_embarked_fare_df$fare, na.rm = TRUE)
+```
+
+```{r, fig.width=14}
+add_on <- geom_vline(aes(xintercept = median_fare), color = "red", linetype = "dashed", lwd = 1)
+aplot <- RplotterPkg::create_density_plot(
+    df = pclass_embarked_fare_df,
+    aes_x = "fare",
+    density_fill = "#99d6ff",
+    title = "Density distribution of 'fare' for observations with 'pclass' = 3 and 'embarked' = S",
+    subtitle = paste0("(dashed line = median value for 'fare' of ",median_fare, ")"),
+    add_ons = c(add_on)
+)
+aplot
+
+```
+
+<div class="task">
+  Task: Set the missing *fare* value of passenger 1226 to the median value of 8.05. Check again for *fare* <code class="cd">NA</code> values.
+</div>
+
+```{r}
+full_df[full_df$passenger_id == 1226,]$fare = median_fare
+missing_fare_df <- full_df %>% 
+  filter(is.na(fare)) %>% 
+  summarise(N = n())
+missing_fare_df
+```
+## 5.4 Address *age* missing data.
+<div class="task">
+  Task: Of the 1309 observations, what are the number and percent of missing *age* values.
+</div>
+
+```{r}
+missing_age_summary_df <- full_df %>% 
+  summarise(
+    missing_age_n = sum(is.na(age)),
+    missing_age_percent = mean(is.na(age))*100
+  )
+missing_age_summary_df$missing_age_n
+missing_age_summary_df$missing_age_percent
+```
+<div class="task">
+  Task: Using <code class="cd">mice::mice()</code> start the imputing process for the *age* variable.
+</div>
+
+```{r}
+mice_df <- full_df %>%
+  select(pclass, sex, age, fare, embarked)
+mice_data <- mice::mice(mice_df, seed = 129, printFlag = FALSE)
+imput_age <- mice_data$imp$age
+imput_complete <- tibble(
+  original = full_df$age,
+  imput_1 = mice::complete(mice_data, 1)$age,
+  imput_2 = mice::complete(mice_data, 2)$age,
+  imput_3 = mice::complete(mice_data, 3)$age,
+  imput_4 = mice::complete(mice_data, 4)$age,
+  imput_5 = mice::complete(mice_data, 5)$age
+)
+imput_complete_longer_df <- pivot_longer(imput_complete, original:imput_5, names_to = "source", values_to = "age")
+glimpse(imput_complete_longer_df)
+```
+
+<div class="task">
+  Task: Plot the distributions of *age* from imput_complete_longer_df across levels of *source*.
+</div>
+
+```{r, fig.width=14}
+age_df <- imput_complete_longer_df %>% 
+  filter(!is.na(age))
+RplotterPkg::create_density_plot(
+    df = age_df,
+    aes_x = "age",
+    aes_color = "source",
+    position = "identity",
+    density_alpha = 0.0,
+    palette_colors = c("black","yellow","green","purple","blue","red")
+)
+```
+
+It looks like *imput_3* (color = green) would be a good approximation.
+<div class="task">
+  Task: For a closer comparison, let's do bar charts of the original `age` and the values from *imput_3*.
+</div>
+
+```{r, fig.width=14, fig.height=6}
+imput_original_imput_3_df <-  imput_complete_longer_df %>% 
+  filter(factor(source) %in% c("original", "imput_3"))
+RplotterPkg::factor_histogram_plot(
+  df = imput_original_imput_3_df,
+  factor_var = "source",
+  y_limits = c(0,225),
+  aes_x = "age",
+  bar_color = "black",
+  bar_fill = "gold",
+  title = "Age Distributions of imput_3 vs original"
+)
+```
+Note that the original distribution on the right does not count the 263 passengers with an `age` of NA.
+<div class="task">
+  Task: The shapes of imput_3 and the original look close, so let's replace our *age* variable in `full_df` with the output from the mice model imput_3.
+</div>
+
+```{r}
+full_df$age <- imput_complete$imput_3
+```
+
+## 5.5 Review missing data for *pclass*, *sex*, *age*, *fare*, and *embarked*
+<div class="task">
+  Task: From an earlier review there are 1043 samples that are complete; 263 are missing only *age*; 2 are missing *embarked* and 1 is missing *fare*.  Do pattern analysis again and see if we have improved the missing values.
+</div>
+
+```{r}
+selected_var_df <- full_df %>% 
+  select(pclass, sex, age, fare, embarked)
+mice::md.pattern(selected_var_df, plot = FALSE)
+```
+There are now no missing values for our selected variables.  
+
+# 6 More relationships and feature engineering
+## 6.1 *survived* vs *age* across *sex*
+
+<div class="task">
+  Task: From full_df, make both *survived* and *sex* as factors.
+</div>
+
+```{r}
+full_df_factored <- full_df %>% 
+  mutate(
+    survived = factor(survived),
+    sex = factor(sex)
+  )
+```
+
+<div class="task">
+  Task: Find the distribution of *age* across values of the factored *sex* and *survived*.
+</div>
+
+```{r, fig.width=14}
+RplotterPkg::factor_histogram_plot(
+  df = full_df_factored,
+  factor_var = "sex",
+  aes_x = "age",
+  aes_fill = "survived",
+  position = "identity",
+  title = "Distribution of age vs survived across sex",
+  palette_colors = c("red","green"),
+  binwidth = 5,
+  y_limits = c(0,140),
+  bar_alpha = 0.6
+)
+```
+It appears that females in the older age groups survived better than the older males.
+
+## 6.2 *survived* vs *child*  
+A "child" is defined as someone under 18 years of age.
+
+<div class="task">
+  Task: For `full_df`, create the column *child* having values "child"/"adult" and show a table of counts between *survived* vs *child*.
+</div>  
+
+```{r}
+full_df <- full_df %>% 
+  mutate(
+    child = if_else(age < 18, "child", "adult"),
+    child = factor(child)
+  ) 
+table(full_df$survived,full_df$child) 
+```
+Does not look as if being a child helped in survival and is much of a discriminator.
+
+The same table as proportions:
+```{r}
+prop.table(table(full_df$survived, full_df$child), 1)
+```
+
+## 6.3 *survived* vs *child* across *sex*
+<div class="task">
+  Task: Show the counts and proportions for *survived* versus *child* across *sex* using the `aggregate()` function.
+</div>
+
+```{r}
+aggregate(survived ~ child + sex, data = full_df, FUN = sum)
+```
+The totals for *survived* versus *child* across *sex*:
+
+```{r}
+aggregate(survived ~ child + sex, data = full_df, FUN = length)
+```
+The proportions for *survived* versus *child* across *sex*:
+
+```{r}
+aggregate(survived ~ child + sex, data = full_df, FUN = function(x){sum(x)/length(x)})
+```
+This shows that females have a good chance to survive, but not much difference among them between `child` or `adult`.
+
+## 6.4 *survived* vs *mother* 
+ A *mother* is a passenger who is:
+
+1. female
+2. is over 18
+3. has more than 0 children
+4. does not have a title 'Miss'
+
+<div class="task">
+  Task: Create a *mother* variable and show table counts of *survived* vs *mother*.
+</div>  
+
+```{r}
+full_df <- full_df %>% 
+  mutate(
+    mother = if_else(sex == "female" & parch > 0 & age > 18 & title != "Miss", "Mother", "Not Mother"),
+    mother = factor(mother)
+  )
+table(full_df$survived, full_df$mother)
+```
+Being a mother may have helped in survival but is not overwhelming. Show the proportions table:
+```{r}
+prop.table(table(full_df$survived, full_df$mother),1)
+```
+
+## 6.5 *survived* vs *fare_dis*
+<div class="task">
+  Task: Add a *fare_dis* variable to `full_df` with bins less than $10, between $10 and $20, between $20 and $30, and more than $30.
+</div>
+
+```{r}
+full_df <- full_df %>% 
+  mutate(
+    fare_dis = case_when(
+      fare < 10 ~ "<10",
+      fare >= 10 & fare < 20 ~ "10-20",
+      fare >= 20 & fare < 30 ~ "20-30",
+      fare >= 30 ~ ">=30"
+    ),
+    fare_dis = factor(fare_dis)
+  )
+```
+<div class="task">
+  Task: Find the counts and proportions for *survived* vs *fare_dis*.
+</div>
+
+```{r}
+table(full_df$survived, full_df$fare_dis)
+```
+The proportions for *survived* vs *fare_dis*:
+```{r}
+prop.table(table(full_df$survived, full_df$fare_dis), 1)
+```
+It appears that the highest paying group had a good chance at survival while those < $10 did not fare as well.
+
+# 7 Sample the `full_df` dataframe into `train_df` and `test_df` dataframes.
+<div class="task">
+  Task: Factorize *pclass*, *sex*, *embarked*, *title*.
+</div>
+
+```{r}
+full_df <- full_df %>% 
+  mutate(
+    pclass = factor(pclass),
+    sex = factor(sex),
+    embarked = factor(embarked),
+    title = factor(title)
+  )
+```
+
+<div class="task">
+  Task: Split `full_df` into a ratio of 70%/30% for train and test respectively.
+</div>
+
+```{r}
+set.seed(142)
+index <- sample(1:1309, size = trunc(0.7 * 1309))
+train_df <- full_df %>% 
+  filter(passenger_id %in% index)
+test_df <- full_df %>% 
+  filter(!(passenger_id %in% index))
+```
+
+
+## 7.1 Save the data frames 
+<div class="task">
+  Task: Save the data frames for reading in part 2.
+</div>  
+
+```{r}
+write_csv(full_df, "data/full_df.csv")
+write_csv(train_df, "data/train_df.csv")
+write_csv(test_df, "data/test_df.csv")
+```

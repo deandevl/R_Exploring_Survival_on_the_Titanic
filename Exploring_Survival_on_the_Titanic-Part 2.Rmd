@@ -1,0 +1,265 @@
+---
+title: "Exploring Survival on the Titanic - Part 2"
+author: "Rick Dean"
+date: "1/12/2020"
+output: 
+  html_document:
+    toc: yes
+    toc_depth: 3
+    css: style.css
+---
+
+```{r,setup, include=FALSE, eval=TRUE}
+options(knitr.table.format = "html")
+knitr::opts_chunk$set(echo = TRUE, collapse=TRUE, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 8)
+```
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyr)
+library(tidyselect)
+library(readr)
+library(stringr)
+library(dplyr)
+library(ggplot2)
+library(rpart)
+library(randomForest)
+library(RplotterPkg)
+library(rattle)
+library(rpart.plot)
+library(RColorBrewer)
+library(titanic)
+```
+
+# 1 Prediction
+"Exploring Survival on the Titanic - Part 2" will concentrate on prediction of the *survived* variable using Decision Tree and Random Forest models.
+
+# 2 Read the data frames.
+<div class="task">
+  Task: Read in the train and test dataframes that were created in section 7 of "Exploring Survival on the Titanic - Part 1". Check the `train_df` data frame.
+</div>
+
+```{r, message = FALSE}
+data_cols <- cols(
+  pclass = "f",
+  sex = "f",
+  embarked = "f",
+  title = "f",
+  family_size_dis = "f",
+  child = "f",
+  mother = "f",
+  fare_dis = "f"
+)
+train_df <- read_csv("data/train_df.csv", col_types = data_cols)
+test_df <- read_csv("data/test_df.csv", col_types = data_cols)
+glimpse(train_df)
+```
+
+# 3 Predict with a Decision Tree
+<div class="task">
+  Task: Show the proportion of `male` vs `female` under *sex*.
+</div>
+```{r}
+prop.table(table(train_df$sex))
+```
+Of the total passengers, 35% female; 65% are male.
+
+<div class="task">
+  Task: Show the proportion of survival/non-survival under *survived*.
+</div>  
+```{r}
+prop.table(table(train_df$survived))
+```
+62% of the passengers did not survive. 38% of the passengers did survive. 
+
+<div class="task">
+  Task: Break out the *survived* variable by *sex* proportions.
+</div>  
+```{r}
+prop.table(table(train_df$sex, train_df$survived), 1)
+```
+If the *sex* is `male` 81% did not survive vs 27% for females;
+
+## 3.1 Decision Tree with *sex* as the first split.
+```{r}
+fit_sex <- rpart(survived ~ sex, data = train_df, method = "class")
+rattle::fancyRpartPlot(fit_sex)
+```
+If you are female there is 73% chance of survival. If you are male there is a 19% chance of survival.
+## 3.2 Decision Tree with *sex* and *age*
+```{r}
+fit_sex_age <- rpart(survived ~ sex + age, data = train_df, method = "class")
+rattle::fancyRpartPlot(fit_sex_age)
+```
+If you a female, a 73% chance of survival. If male then if age is less than 6.5 your survival is 56%, otherwise its 17%.
+
+<div class="task">
+  Task: Confirm the above tree by calculating a proportional aggregation.
+</div>
+
+```{r}
+train_sex_age_df <- train_df %>% 
+  select(survived, sex, age) %>% 
+  mutate(
+    age_ge_6.5 = if_else(age >= 6.5, TRUE, FALSE),
+    survived = as.integer(survived)
+  )
+glimpse(train_sex_age_df)
+```
+Perform the aggregation:
+```{r}
+aggregate(survived ~ sex + age_ge_6.5, data = train_sex_age_df, FUN = function(x){sum(x)/length(x)})
+```
+Again it appears that males with *age* less than 6.5 had a 56% chance of survival otherwise it is 17% as shown in `fit_sex_age` tree diagram.
+
+
+## 3.3 Decision Tree with all variables
+<div class="task">
+  Task: Build the model with *pclass*, *sex*, *age*, *sibSp*, *parch*, *fare*, *embarked*, *title*, *family_size_dis*, *child*, *mother*, *fare_dis*.
+</div>
+
+```{r}
+fit_all <- rpart(survived ~ pclass + sex + age + sibsp + parch + fare + embarked + title + family_size_dis + child + mother + fare_dis, data = train_df, method = "class")
+rattle::fancyRpartPlot(fit_all)
+```
+
+<div class="task">
+  Task: Look at the split between *sex* and *pclass*.
+</div>
+
+```{r}
+train_sex_pclass_eq_3_df <- train_df %>% 
+  select(survived, sex, pclass) %>% 
+  mutate(
+    pclass_eq_3 = if_else(pclass == 3, TRUE, FALSE)
+  )
+glimpse(train_sex_pclass_eq_3_df)
+```
+<div class="task">
+  Task: Show the proportional aggregation of *survived* with *sex* and *pclass_eq_3*.
+</div>
+
+```{r}
+aggregate(survived ~ sex + pclass_eq_3, data = train_sex_pclass_eq_3_df, FUN = function(x){sum(x)/length(x)})
+```
+It appears that females that have *pclass* = 3 have a 48% chance of survival.  For females, that have *pclass* equal to 1 or 2, their survival is 92% as shown in the `fit_all` tree diagram.
+
+<div class="task">
+  Task: Attempt a simpler model by setting rpart.control(minsplit = 100 argument of rpart (i.e. the minimum number of observations in any terminal <leaf> node).
+</div>  
+```{r}
+fit_all_100 <- rpart(survived ~ sex + pclass + age + sibsp + parch + embarked + title + family_size_dis + child + mother + fare_dis,
+                 data = train_df,
+                 method = "class",
+                 control = rpart.control(minsplit = 100))
+rattle::fancyRpartPlot(fit_all_100)
+```
+
+It appears that females in *pclass* = 3 who embarked from Southampton had a 38% chance of surviving, otherwise if not from Southampton, a 64% chance of survival.
+
+<div class="task">
+  Task: Build a simpler model with *sex*, *age*, and *pclass*.
+</div>  
+```{r}
+fit_sex_age_pclass <- rpart(survived ~ sex + age + pclass, 
+                            data = train_df, 
+                            method = "class",
+                            control = rpart.control(minsplit = 80))
+rattle::fancyRpartPlot(fit_sex_age_pclass)
+```
+It appears that in addition to male survival at 56% if age is less than 6.5, we have for females in pclass equal to 3 and your age is less than 25 then your survival is 56%.
+
+# 4  Model selection from many Decision Trees
+<div class="task">
+  Task: Build many Decision Trees via randomForest::randomForest() using all the variables.
+</div>
+
+```{r}
+set.seed(754)
+fit_all_rf <- randomForest::randomForest(factor(survived) ~ pclass + sex + age + sibsp + parch + fare + embarked + title + family_size_dis + child + mother + fare_dis, data = train_df, importance=TRUE)
+
+fit_all_rf
+
+```
+<div class="task">
+  Task: Look at what variables were important.
+</div>
+
+```{r}
+randomForest::varImpPlot(fit_all_rf)
+```
+
+<div class="task">
+  Task: Build a model from the top 4 variables of the MeanDecreaseGini plot using rpart().
+</div>
+
+```{r}
+fit_sex_title_fare_age <- rpart(survived ~ sex + fare + title + age, 
+                            data = train_df, 
+                            method = "class",
+                            control = rpart.control(minsplit = 80))
+rattle::fancyRpartPlot(fit_sex_title_fare_age)
+```
+<div class="task">
+  Task: Compute randomForest() with just *sex* and *age*.
+</div>
+
+```{r}
+set.seed(754)
+fit_sex_age_rf <- randomForest::randomForest(factor(survived) ~ sex + age, data = train_df, importance=TRUE)
+fit_sex_age_rf
+```
+
+<div class="task">
+  Task: Show the error for `fit_sex_age_rf`.
+</div>
+
+```{r, fig.width=14}
+plot_rf_df <- as.data.frame(fit_sex_age_rf$err.rate) %>% 
+  mutate(tree = seq(from = 1, to = 500, by = 1)) %>% 
+  rename(error_OOB = OOB) %>% 
+  rename(error_0 = `0`) %>% 
+  rename(error_1 = `1`)
+
+ plot_rf_long_df <- pivot_longer(plot_rf_df, dplyr::starts_with("error"), names_to = "source", values_to = "errors")
+
+RplotterPkg::create_scatter_plot(
+  df = plot_rf_long_df,
+  aes_x = "tree",
+  aes_y = "errors",
+  aes_color = "source",
+  palette_colors = c("red", "blue", "black"),
+  connect = TRUE,
+  y_limits = c(0.10, 0.40)
+)
+```
+
+# Prediction of Survived
+<div class="task">
+  Task: Predict using the `fit_sex_age_rf` model. Save the solution to a dataframe and to a file.
+</div>
+
+```{r}
+predict_factor <- predict(fit_sex_age_rf, test_df)
+
+results_df <- test_df %>% 
+  mutate(
+    obs = survived,
+    pred = predict_factor,
+    score = if_else(survived == pred, 1, 0)
+  ) %>% 
+  select(passenger_id, obs, pred, score)
+
+results <- table(results_df$score)
+results
+results_prop <- sum(results_df$score)/length(results_df$score)
+results_prop
+```
+
+Save the results.
+
+```{r}
+write_csv(results_df, path = "data/results_df.csv")
+```
+
+
+

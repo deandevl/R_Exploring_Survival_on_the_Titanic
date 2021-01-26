@@ -1,0 +1,30 @@
+h1, .h1, h2, .h2 {
+  margin-top: 54px;
+}
+
+div {
+  font-size: 13pt;
+}
+.task {
+  font-size: 15pt;
+  color: green;
+}
+
+.exer {
+  font-size:14pt;
+  font-weight: bold;
+  color: purple;
+}
+
+div code {
+  color: green;
+}
+
+caption {
+  font-size: 0.9em;
+  font-style: italic;
+  color: grey;
+  margin-right: 10%;
+  margin-left: 10%;
+  text-align: justify;
+}
